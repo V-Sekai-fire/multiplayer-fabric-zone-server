@@ -1,42 +1,57 @@
 defmodule ZoneServer.Packet do
   @moduledoc """
-  CH_INTEREST packet encoder.
+  CH_INTEREST packet encoder — 100 bytes per entity.
+  Layout proved in lean/ChInterest.lean.
 
-  Layout (100 bytes per entity):
-    [u32 gid(4)][f64 cx(8)][f64 cy(8)][f64 cz(8)]
-    [i16 vx(2)][i16 vy(2)][i16 vz(2)][i16 ax(2)][i16 ay(2)][i16 az(2)]
-    [u32 hlc(4)][u32×14 payload(56)]
+    Offset  Size  Field
+         0     4  gid        uint32 LE
+         4     8  cx         float64 LE
+        12     8  cy
+        20     8  cz
+        28     2  vx         int16 LE (V_SCALE)
+        30     2  vy
+        32     2  vz
+        34     2  ax
+        36     2  ay
+        38     2  az
+        40     4  hlc        uint32 LE
+        44    56  payload    uint32 × 14
+       100     —  end
   """
 
-  @entry_size 100
+  @v_scale 32767.0 / (500_000.0 * 1.0e-6)
 
   def encode_interest(entities) when is_list(entities) do
-    Enum.reduce(entities, <<>>, fn e, acc ->
-      acc <> encode_entry(e)
-    end)
+    Enum.reduce(entities, <<>>, fn e, acc -> acc <> encode_entry(e) end)
   end
 
-  defp encode_entry(%{gid: gid, x: x, y: y, z: z}) do
+  defp encode_entry(%{gid: gid, cx: cx, cy: cy, cz: cz,
+                      vx: vx, vy: vy, vz: vz,
+                      ax: ax, ay: ay, az: az}) do
     <<
       gid::little-unsigned-32,
-      x::little-float-64,
-      y::little-float-64,
-      z::little-float-64,
-      # vel/accel: zero
-      0::little-signed-16, 0::little-signed-16, 0::little-signed-16,
-      0::little-signed-16, 0::little-signed-16, 0::little-signed-16,
-      # hlc: zero
+      cx::little-float-64,
+      cy::little-float-64,
+      cz::little-float-64,
+      clamp16(round(vx * @v_scale))::little-signed-16,
+      clamp16(round(vy * @v_scale))::little-signed-16,
+      clamp16(round(vz * @v_scale))::little-signed-16,
+      clamp16(round(ax * @v_scale))::little-signed-16,
+      clamp16(round(ay * @v_scale))::little-signed-16,
+      clamp16(round(az * @v_scale))::little-signed-16,
       0::little-unsigned-32,
-      # payload[0]: entity_class=0 (jellyfish), owner=0, state=0
       0::little-unsigned-32,
-      # payload[1..13]: zero
-      0::little-unsigned-32, 0::little-unsigned-32, 0::little-unsigned-32,
-      0::little-unsigned-32, 0::little-unsigned-32, 0::little-unsigned-32,
-      0::little-unsigned-32, 0::little-unsigned-32, 0::little-unsigned-32,
-      0::little-unsigned-32, 0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
+      0::little-unsigned-32, 0::little-unsigned-32,
       0::little-unsigned-32
     >>
   end
 
-  def entry_size, do: @entry_size
+  defp clamp16(v) when v >  32767, do:  32767
+  defp clamp16(v) when v < -32767, do: -32767
+  defp clamp16(v), do: v
 end

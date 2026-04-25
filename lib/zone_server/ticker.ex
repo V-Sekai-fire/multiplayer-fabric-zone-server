@@ -1,20 +1,19 @@
 defmodule ZoneServer.Ticker do
   @moduledoc """
-  Broadcasts CH_INTEREST datagrams to all connected clients every ~83 ms (~12 Hz).
+  Advances entity simulation each tick and broadcasts CH_INTEREST datagrams
+  to all registered connections at ~12 Hz.
 
-  Frame format (webtransportd frame.h):
-    flag    = 0x05  # channel=2 (CH_INTEREST), unreliable: (2 << 1) | 1
-    varint  = QUIC-style length of payload
-    payload = N × 100-byte CH_INTEREST entries
+  WTD frame flag: version=1 (bits 4-7), channel=2 (bits 1-3), unreliable (bit 0)
+  flag = (1 << 4) | (2 << 1) | 1 = 0x15
+  Proved in lean/ChInterest.lean :: ch_interest_v1_flag
   """
   use GenServer
+  import Bitwise
   require Logger
 
-  @interval_ms 83
+  @interval_ms  83    # ~12 Hz
   @entity_count 16
-
-  # CH_INTEREST channel = 2, unreliable bit = 1 → flag = (2 << 1) | 1 = 5
-  @ch_interest_flag 0x05
+  @ch_interest_flag 0x15   # version=1, channel=2, unreliable
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -22,57 +21,36 @@ defmodule ZoneServer.Ticker do
 
   @impl true
   def init(_) do
+    entities = for i <- 0..(@entity_count - 1), do: ZoneServer.Sim.new(i, @entity_count)
     :timer.send_interval(@interval_ms, :tick)
-    {:ok, 0}
+    {:ok, %{tick: 0, entities: entities}}
   end
 
   @impl true
-  def handle_info(:tick, tick) do
-    packet = build_packet(tick)
+  def handle_info(:tick, %{tick: tick, entities: entities} = state) do
+    entities = Enum.map(entities, &ZoneServer.Sim.step(&1, tick))
+    packet   = build_packet(entities)
     broadcast(packet, tick)
-    {:noreply, tick + 1}
+    {:noreply, %{state | tick: tick + 1, entities: entities}}
   end
 
   defp broadcast(packet, tick) do
-    connections =
-      Registry.lookup(ZoneServer.ConnectionRegistry, :connection)
-
-    if connections != [] && rem(tick, 60) == 0 do
-      Logger.info("[ZoneServer] tick=#{tick} broadcasting to #{length(connections)} clients")
+    conns = Registry.lookup(ZoneServer.ConnectionRegistry, :connection)
+    if conns != [] && rem(tick, 60) == 0 do
+      Logger.info("[ZoneServer] tick=#{tick} clients=#{length(conns)}")
     end
-
-    Enum.each(connections, fn {_pid, conn} ->
+    Enum.each(conns, fn {_pid, conn} ->
       Wtransport.Connection.send_datagram(conn, packet)
     end)
   end
 
-  defp build_packet(tick) do
-    entities =
-      for i <- 0..(@entity_count - 1) do
-        angle = tick * 0.05 + i * :math.pi() * 2 / @entity_count
-        %{gid: i, x: :math.cos(angle) * 5.0, y: 0.0, z: :math.sin(angle) * 5.0}
-      end
-
+  defp build_packet(entities) do
     payload = ZoneServer.Packet.encode_interest(entities)
-    frame(@ch_interest_flag, payload)
+    <<@ch_interest_flag>> <> quic_varint(byte_size(payload)) <> payload
   end
 
-  # Encode flag | QUIC varint(len) | payload
-  defp frame(flag, payload) do
-    len = byte_size(payload)
-    <<flag>> <> quic_varint(len) <> payload
-  end
-
-  import Bitwise
-
-  # QUIC-style varint (RFC 9000 §16)
-  defp quic_varint(v) when v < 64,
-    do: <<v>>
-  defp quic_varint(v) when v < 16_384,
-    do: <<0x40 ||| (v >>> 8), v &&& 0xFF>>
-  defp quic_varint(v) when v < 1_073_741_824,
-    do: <<0x80 ||| (v >>> 24), (v >>> 16) &&& 0xFF, (v >>> 8) &&& 0xFF, v &&& 0xFF>>
-  defp quic_varint(v),
-    do: <<0xC0 ||| (v >>> 56), (v >>> 48) &&& 0xFF, (v >>> 40) &&& 0xFF, (v >>> 32) &&& 0xFF,
-          (v >>> 24) &&& 0xFF, (v >>> 16) &&& 0xFF, (v >>> 8) &&& 0xFF, v &&& 0xFF>>
+  defp quic_varint(v) when v < 64,             do: <<v>>
+  defp quic_varint(v) when v < 16_384,          do: <<0x40 ||| (v >>> 8), v &&& 0xFF>>
+  defp quic_varint(v) when v < 1_073_741_824,   do: <<0x80 ||| (v >>> 24), (v >>> 16) &&& 0xFF, (v >>> 8) &&& 0xFF, v &&& 0xFF>>
+  defp quic_varint(v),                           do: <<0xC0 ||| (v >>> 56), (v >>> 48) &&& 0xFF, (v >>> 40) &&& 0xFF, (v >>> 32) &&& 0xFF, (v >>> 24) &&& 0xFF, (v >>> 16) &&& 0xFF, (v >>> 8) &&& 0xFF, v &&& 0xFF>>
 end
