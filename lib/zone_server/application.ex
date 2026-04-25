@@ -18,7 +18,6 @@ defmodule ZoneServer.Application do
         name: ZoneServer.WtSupervisor}
     ]
 
-    opts = [strategy: :one_for_one, name: ZoneServer.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children, strategy: :one_for_one, name: ZoneServer.Supervisor)
   end
 end
