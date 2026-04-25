@@ -21,6 +21,7 @@ defmodule ZoneServer.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:typed_struct, "~> 0.3"},
       {:wtransport, github: "V-Sekai-fire/multiplayer-fabric-webtransport"}
     ]
   end
